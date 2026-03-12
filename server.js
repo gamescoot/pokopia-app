@@ -1,4 +1,5 @@
 const dns = require('dns');
+const { lookup: originalLookup } = dns;
 dns.setDefaultResultOrder('ipv4first');
 
 const express = require('express');
@@ -11,6 +12,13 @@ const PORT = process.env.PORT || 3000;
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://scottharris@localhost:5432/pokopia',
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
+  // Force IPv4 for Render compatibility
+  ...(process.env.DATABASE_URL ? {
+    lookup: (hostname, options, callback) => {
+      options = { ...options, family: 4 };
+      return originalLookup(hostname, options, callback);
+    }
+  } : {}),
 });
 
 app.use(express.json());
@@ -143,6 +151,25 @@ app.get('/api/progress', async (req, res) => {
   `);
   const overall = rows.reduce((a, r) => ({ total: a.total + r.total, found: a.found + r.found }), { total: 0, found: 0 });
   res.json({ overall, categories: rows });
+});
+
+// Diagnostic endpoint - check DB tables
+app.get('/api/debug', async (req, res) => {
+  try {
+    const tables = await pool.query(`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+      ORDER BY table_name
+    `);
+    const counts = {};
+    for (const t of tables.rows) {
+      const { rows } = await pool.query(`SELECT count(*)::int AS n FROM "${t.table_name}"`);
+      counts[t.table_name] = rows[0].n;
+    }
+    res.json({ tables: counts });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.listen(PORT, () => console.log(`Pokopia Checklist running at http://localhost:${PORT}`));
