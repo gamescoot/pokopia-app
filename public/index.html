@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pokopia Checklist</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="logo">
+        <span class="logo-icon">📋</span>
+        <h1>Pokopia <span>Checklist</span></h1>
+      </div>
+      <div class="progress-bar-wrap">
+        <div class="progress-label"><span id="progress-text">0 / 0</span></div>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <aside class="sidebar">
+      <div class="search-box">
+        <input type="text" id="search" placeholder="Search items...">
+      </div>
+
+      <div class="filter-section">
+        <h3>Filter</h3>
+        <select id="filter-found">
+          <option value="">All Items</option>
+          <option value="false">Not Found</option>
+          <option value="true">Found</option>
+        </select>
+      </div>
+
+      <div class="filter-section">
+        <h3>Region</h3>
+        <div id="region-filters" class="pill-group"></div>
+      </div>
+
+      <div class="filter-section">
+        <h3>Category</h3>
+        <div id="category-filters" class="category-list"></div>
+      </div>
+    </aside>
+
+    <section class="content">
+      <div class="content-header">
+        <h2 id="content-title">All Items</h2>
+        <span class="item-count" id="item-count"></span>
+      </div>
+      <div class="card-grid" id="card-grid"></div>
+    </section>
+  </main>
+
+  <!-- Detail Modal -->
+  <div class="modal-overlay" id="modal-overlay">
+    <div class="modal" id="modal">
+      <button class="modal-close" id="modal-close">&times;</button>
+      <div id="modal-content"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
