@@ -4,15 +4,16 @@ dns.setDefaultResultOrder('ipv4first');
 
 const express = require('express');
 const { Pool } = require('pg');
+const jwt = require('jsonwebtoken');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET;
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://scottharris@localhost:5432/pokopia',
   ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false,
-  // Force IPv4 for Render compatibility
   ...(process.env.DATABASE_URL ? {
     lookup: (hostname, options, callback) => {
       options = { ...options, family: 4 };
@@ -23,6 +24,35 @@ const pool = new Pool({
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Auth middleware - required
+function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Login required' });
+  }
+  try {
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, SUPABASE_JWT_SECRET);
+    req.userId = decoded.sub;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+}
+
+// Auth middleware - optional
+function optionalAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      const token = authHeader.split(' ')[1];
+      const decoded = jwt.verify(token, SUPABASE_JWT_SECRET);
+      req.userId = decoded.sub;
+    } catch (err) { /* proceed without auth */ }
+  }
+  next();
+}
 
 // Get all regions
 app.get('/api/regions', async (req, res) => {
@@ -43,11 +73,16 @@ app.get('/api/categories', async (req, res) => {
 });
 
 // Get checklist items with filtering
-app.get('/api/items', async (req, res) => {
+app.get('/api/items', optionalAuth, async (req, res) => {
   const { category, region, search, found } = req.query;
   let where = [];
   let params = [];
   let idx = 1;
+
+  if (req.userId) {
+    params.push(req.userId);
+    idx = 2;
+  }
 
   if (category) {
     where.push(`c.name = $${idx++}`);
@@ -61,34 +96,56 @@ app.get('/api/items', async (req, res) => {
     where.push(`ci.name ILIKE $${idx++}`);
     params.push(`%${search}%`);
   }
-  if (found === 'true') where.push('ci.found = true');
-  if (found === 'false') where.push('ci.found = false');
+
+  const foundExpr = req.userId ? 'COALESCE(up.found, false)' : 'false';
+  if (found === 'true') where.push(`${foundExpr} = true`);
+  if (found === 'false') where.push(`${foundExpr} = false`);
 
   const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+  const joinProgress = req.userId
+    ? 'LEFT JOIN user_progress up ON up.checklist_item_id = ci.id AND up.user_id = $1'
+    : '';
 
   const { rows } = await pool.query(`
-    SELECT ci.id, ci.name, ci.description, ci.unlocks, ci.found,
+    SELECT ci.id, ci.name, ci.description, ci.unlocks,
+           ${foundExpr} AS found,
            c.name AS category, r.name AS region
     FROM checklist_items ci
     JOIN categories c ON c.id = ci.category_id
     LEFT JOIN regions r ON r.id = ci.region_id
+    ${joinProgress}
     ${whereClause}
     ORDER BY c.name, ci.name
   `, params);
   res.json(rows);
 });
 
-// Get item detail (with habitat or pokemon data)
-app.get('/api/items/:id', async (req, res) => {
+// Get item detail
+app.get('/api/items/:id', optionalAuth, async (req, res) => {
   const { id } = req.params;
+  let params, foundExpr, joinProgress, idParam;
+
+  if (req.userId) {
+    params = [req.userId, id];
+    foundExpr = 'COALESCE(up.found, false) AS found';
+    joinProgress = 'LEFT JOIN user_progress up ON up.checklist_item_id = ci.id AND up.user_id = $1';
+    idParam = '$2';
+  } else {
+    params = [id];
+    foundExpr = 'false AS found';
+    joinProgress = '';
+    idParam = '$1';
+  }
 
   const { rows: [item] } = await pool.query(`
-    SELECT ci.*, c.name AS category, r.name AS region
+    SELECT ci.id, ci.name, ci.description, ci.unlocks, ${foundExpr},
+           c.name AS category, r.name AS region
     FROM checklist_items ci
     JOIN categories c ON c.id = ci.category_id
     LEFT JOIN regions r ON r.id = ci.region_id
-    WHERE ci.id = $1
-  `, [id]);
+    ${joinProgress}
+    WHERE ci.id = ${idParam}
+  `, params);
 
   if (!item) return res.status(404).json({ error: 'Not found' });
 
@@ -129,47 +186,43 @@ app.get('/api/items/:id', async (req, res) => {
   res.json(item);
 });
 
-// Toggle found
-app.patch('/api/items/:id/toggle', async (req, res) => {
-  const { rows: [item] } = await pool.query(
-    'UPDATE checklist_items SET found = NOT found WHERE id = $1 RETURNING id, found', [req.params.id]
-  );
-  res.json(item);
+// Toggle found - requires login
+app.patch('/api/items/:id/toggle', requireAuth, async (req, res) => {
+  const { rows: [result] } = await pool.query(`
+    INSERT INTO user_progress (user_id, checklist_item_id, found)
+    VALUES ($1, $2, true)
+    ON CONFLICT (user_id, checklist_item_id)
+    DO UPDATE SET found = NOT user_progress.found, updated_at = now()
+    RETURNING checklist_item_id AS id, found
+  `, [req.userId, req.params.id]);
+  res.json(result);
 });
 
 // Progress stats
-app.get('/api/progress', async (req, res) => {
-  const { rows } = await pool.query(`
-    SELECT
-      c.name AS category,
-      COUNT(*)::int AS total,
-      COUNT(*) FILTER (WHERE ci.found)::int AS found
-    FROM checklist_items ci
-    JOIN categories c ON c.id = ci.category_id
-    GROUP BY c.name
-    ORDER BY c.name
-  `);
+app.get('/api/progress', optionalAuth, async (req, res) => {
+  let rows;
+  if (req.userId) {
+    ({ rows } = await pool.query(`
+      SELECT c.name AS category,
+             COUNT(ci.id)::int AS total,
+             COUNT(up.id) FILTER (WHERE up.found)::int AS found
+      FROM checklist_items ci
+      JOIN categories c ON c.id = ci.category_id
+      LEFT JOIN user_progress up ON up.checklist_item_id = ci.id AND up.user_id = $1
+      GROUP BY c.name
+      ORDER BY c.name
+    `, [req.userId]));
+  } else {
+    ({ rows } = await pool.query(`
+      SELECT c.name AS category, COUNT(ci.id)::int AS total, 0::int AS found
+      FROM checklist_items ci
+      JOIN categories c ON c.id = ci.category_id
+      GROUP BY c.name
+      ORDER BY c.name
+    `));
+  }
   const overall = rows.reduce((a, r) => ({ total: a.total + r.total, found: a.found + r.found }), { total: 0, found: 0 });
   res.json({ overall, categories: rows });
-});
-
-// Diagnostic endpoint - check DB tables
-app.get('/api/debug', async (req, res) => {
-  try {
-    const tables = await pool.query(`
-      SELECT table_name FROM information_schema.tables
-      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-      ORDER BY table_name
-    `);
-    const counts = {};
-    for (const t of tables.rows) {
-      const { rows } = await pool.query(`SELECT count(*)::int AS n FROM "${t.table_name}"`);
-      counts[t.table_name] = rows[0].n;
-    }
-    res.json({ tables: counts });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
 });
 
 app.listen(PORT, () => console.log(`Pokopia Checklist running at http://localhost:${PORT}`));

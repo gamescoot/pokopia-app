@@ -1,13 +1,121 @@
+// --- Supabase Auth ---
+const SUPABASE_URL = 'https://mttbyfmvyocinbxewoix.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im10dGJ5Zm12eW9jaW5ieGV3b2l4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzMjkxNDMsImV4cCI6MjA4ODkwNTE0M30.Mf2vC64AChMiFko5uA5u003AMr8Z0ncJhQrN1UD1gUA';
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let currentSession = null;
 let activeCategory = null;
 let activeRegion = null;
 let searchTimeout = null;
 
-// Init
+function authHeaders() {
+  if (!currentSession?.access_token) return {};
+  return { 'Authorization': `Bearer ${currentSession.access_token}` };
+}
+
+// --- Auth UI ---
+let isSignUpMode = false;
+
+function openAuthModal() {
+  isSignUpMode = false;
+  document.getElementById('auth-title').textContent = 'Log In';
+  document.getElementById('auth-submit').textContent = 'Log In';
+  document.getElementById('auth-switch-text').textContent = "Don't have an account?";
+  document.getElementById('auth-switch-btn').textContent = 'Sign Up';
+  document.getElementById('auth-error').textContent = '';
+  document.getElementById('auth-form').reset();
+  document.getElementById('auth-modal-overlay').classList.add('open');
+}
+
+function closeAuthModal() {
+  document.getElementById('auth-modal-overlay').classList.remove('open');
+}
+
+function updateAuthUI() {
+  const section = document.getElementById('auth-section');
+  if (currentSession) {
+    section.innerHTML = `
+      <span class="auth-user">${esc(currentSession.user.email)}</span>
+      <button class="auth-btn" id="logout-btn">Log Out</button>
+    `;
+    document.getElementById('logout-btn').addEventListener('click', handleLogout);
+  } else {
+    section.innerHTML = `<button class="auth-btn" id="login-btn">Log In</button>`;
+    document.getElementById('login-btn').addEventListener('click', openAuthModal);
+  }
+}
+
+async function handleLogout() {
+  await sb.auth.signOut();
+  currentSession = null;
+  updateAuthUI();
+  loadProgress();
+  loadItems();
+}
+
+// --- Init ---
 document.addEventListener('DOMContentLoaded', async () => {
+  // Auth setup
+  const { data: { session } } = await sb.auth.getSession();
+  currentSession = session;
+  updateAuthUI();
+
+  sb.auth.onAuthStateChange((event, session) => {
+    currentSession = session;
+    updateAuthUI();
+    loadProgress();
+    loadItems();
+  });
+
+  // Auth modal events
+  document.getElementById('auth-modal-overlay').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeAuthModal();
+  });
+  document.getElementById('auth-modal-close').addEventListener('click', closeAuthModal);
+
+  document.getElementById('auth-switch-btn').addEventListener('click', () => {
+    isSignUpMode = !isSignUpMode;
+    document.getElementById('auth-title').textContent = isSignUpMode ? 'Sign Up' : 'Log In';
+    document.getElementById('auth-submit').textContent = isSignUpMode ? 'Sign Up' : 'Log In';
+    document.getElementById('auth-switch-text').textContent = isSignUpMode ? 'Already have an account?' : "Don't have an account?";
+    document.getElementById('auth-switch-btn').textContent = isSignUpMode ? 'Log In' : 'Sign Up';
+    document.getElementById('auth-error').textContent = '';
+  });
+
+  document.getElementById('auth-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = document.getElementById('auth-email').value;
+    const password = document.getElementById('auth-password').value;
+    const errorEl = document.getElementById('auth-error');
+    errorEl.textContent = '';
+
+    try {
+      let result;
+      if (isSignUpMode) {
+        result = await sb.auth.signUp({ email, password });
+      } else {
+        result = await sb.auth.signInWithPassword({ email, password });
+      }
+      if (result.error) throw result.error;
+
+      if (isSignUpMode && !result.data.session) {
+        errorEl.style.color = 'var(--green)';
+        errorEl.textContent = 'Check your email to confirm your account!';
+        return;
+      }
+
+      closeAuthModal();
+    } catch (err) {
+      errorEl.style.color = '#ff6b6b';
+      errorEl.textContent = err.message;
+    }
+  });
+
+  // App setup
   await Promise.all([loadRegions(), loadCategories(), loadProgress()]);
   loadItems();
 
-  document.getElementById('search').addEventListener('input', (e) => {
+  document.getElementById('search').addEventListener('input', () => {
     clearTimeout(searchTimeout);
     searchTimeout = setTimeout(() => loadItems(), 250);
   });
@@ -18,7 +126,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (e.target === e.currentTarget) closeModal();
   });
   document.getElementById('modal-close').addEventListener('click', closeModal);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeModal(); closeAuthModal(); }
+  });
 });
 
 async function loadRegions() {
@@ -92,7 +202,7 @@ async function loadItems() {
   const found = document.getElementById('filter-found').value;
   if (found) params.set('found', found);
 
-  const items = await fetch(`/api/items?${params}`).then(r => r.json());
+  const items = await fetch(`/api/items?${params}`, { headers: authHeaders() }).then(r => r.json());
   renderGrid(items);
 }
 
@@ -133,8 +243,9 @@ function renderGrid(items) {
   grid.querySelectorAll('.check-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
+      if (!currentSession) { openAuthModal(); return; }
       const id = btn.dataset.id;
-      const res = await fetch(`/api/items/${id}/toggle`, { method: 'PATCH' }).then(r => r.json());
+      const res = await fetch(`/api/items/${id}/toggle`, { method: 'PATCH', headers: authHeaders() }).then(r => r.json());
       const card = btn.closest('.card');
       card.classList.toggle('found', res.found);
       loadProgress();
@@ -143,7 +254,7 @@ function renderGrid(items) {
 }
 
 async function openDetail(id) {
-  const item = await fetch(`/api/items/${id}`).then(r => r.json());
+  const item = await fetch(`/api/items/${id}`, { headers: authHeaders() }).then(r => r.json());
   const content = document.getElementById('modal-content');
 
   let html = `
@@ -257,7 +368,8 @@ async function openDetail(id) {
   content.innerHTML = html;
 
   document.getElementById('modal-toggle').addEventListener('click', async () => {
-    const res = await fetch(`/api/items/${item.id}/toggle`, { method: 'PATCH' }).then(r => r.json());
+    if (!currentSession) { openAuthModal(); return; }
+    const res = await fetch(`/api/items/${item.id}/toggle`, { method: 'PATCH', headers: authHeaders() }).then(r => r.json());
     const btn = document.getElementById('modal-toggle');
     btn.classList.toggle('found', res.found);
     btn.querySelector('span').textContent = res.found ? '✓ Found' : 'Mark as Found';
@@ -273,7 +385,7 @@ function closeModal() {
 }
 
 async function loadProgress() {
-  const data = await fetch('/api/progress').then(r => r.json());
+  const data = await fetch('/api/progress', { headers: authHeaders() }).then(r => r.json());
   const pct = data.overall.total ? Math.round((data.overall.found / data.overall.total) * 100) : 0;
   document.getElementById('progress-text').textContent = `${data.overall.found} / ${data.overall.total} (${pct}%)`;
   document.getElementById('progress-fill').style.width = `${pct}%`;

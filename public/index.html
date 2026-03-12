@@ -17,6 +17,7 @@
         <div class="progress-label"><span id="progress-text">0 / 0</span></div>
         <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
       </div>
+      <div class="auth-section" id="auth-section"></div>
     </div>
   </header>
 
@@ -63,6 +64,27 @@
     </div>
   </div>
 
+  <!-- Auth Modal -->
+  <div class="modal-overlay" id="auth-modal-overlay">
+    <div class="modal auth-modal">
+      <button class="modal-close" id="auth-modal-close">&times;</button>
+      <div id="auth-modal-content">
+        <div class="modal-title" id="auth-title">Log In</div>
+        <form id="auth-form">
+          <input type="email" id="auth-email" placeholder="Email" required>
+          <input type="password" id="auth-password" placeholder="Password" required>
+          <div class="auth-error" id="auth-error"></div>
+          <button type="submit" class="auth-submit" id="auth-submit">Log In</button>
+        </form>
+        <p class="auth-switch">
+          <span id="auth-switch-text">Don't have an account?</span>
+          <button id="auth-switch-btn" type="button">Sign Up</button>
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
