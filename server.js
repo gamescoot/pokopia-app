@@ -4,12 +4,15 @@ dns.setDefaultResultOrder('ipv4first');
 
 const express = require('express');
 const { Pool } = require('pg');
-const jwt = require('jsonwebtoken');
+const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const SUPABASE_JWT_SECRET = process.env.SUPABASE_JWT_SECRET;
+
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mttbyfmvyocinbxewoix.supabase.co';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '';
+const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://scottharris@localhost:5432/pokopia',
@@ -26,30 +29,23 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Auth middleware - required
-function requireAuth(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Login required' });
-  }
-  try {
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, SUPABASE_JWT_SECRET);
-    req.userId = decoded.sub;
-    next();
-  } catch (err) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
+async function requireAuth(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return res.status(401).json({ error: 'Login required' });
+
+  const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
+  if (error || !user) return res.status(401).json({ error: 'Invalid token' });
+
+  req.userId = user.id;
+  next();
 }
 
 // Auth middleware - optional
-function optionalAuth(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    try {
-      const token = authHeader.split(' ')[1];
-      const decoded = jwt.verify(token, SUPABASE_JWT_SECRET);
-      req.userId = decoded.sub;
-    } catch (err) { /* proceed without auth */ }
+async function optionalAuth(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (token) {
+    const { data: { user } } = await supabaseAdmin.auth.getUser(token);
+    if (user) req.userId = user.id;
   }
   next();
 }
